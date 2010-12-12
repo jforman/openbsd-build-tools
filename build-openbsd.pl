@@ -12,13 +12,13 @@ my @build_array = ();
 
 my @build_kernel_array = (
     # Build kernel
-    { name => "cd_confdir", command => "cd /usr/src/sys/arch/$ARCH/conf" },
+    { name => "cd_confdir", command => 'chdir("/usr/src/sys/arch/$ARCH/conf")', perlcmd => 1},
     { name => "run_config", command => "/usr/sbin/config GENERIC" },
-    { name => "cd_compiledir", command => "cd /usr/src/sys/arch/$ARCH/compile/GENERIC" },
-    { name => "run_makeclean", command => "make clean" },
-    { name => "run_makedepend", command => "make depend" },
-    { name => "run_make", command => "make" },
-    { name => "run_makeinstall", command => "make install" },
+#    { name => "cd_compiledir", command => "chdir(/usr/src/sys/arch/$ARCH/compile/GENERIC)", perlcmd => 1 },
+#    { name => "run_makeclean", command => "make clean" },
+#    { name => "run_makedepend", command => "make depend" },
+#    { name => "run_make", command => "make" },
+#    { name => "run_makeinstall", command => "make install" },
     );
 
 my @build_userland_array = (
@@ -33,10 +33,29 @@ my @build_userland_array = (
     );
 
 sub run_command {
-    my $command_name = $_[0];
-    my $command_path = $_[1];
-    print "In run_command block. Name: $command_name, Command: $command_path\n";
-    system($command_path) == 0 or die "\nFailure at step: $command_name, Exit status: $?\n"
+    # Update this to accept input of the array of commands. 
+    # Check for shell or chdir or whatever? Eval if not a shell command?
+    my %cmd_hash = %{$_[0]};
+    my $cmd_name = $cmd_hash{'name'};
+    my $cmd_path = $cmd_hash{'command'};
+    my $cmd_perl = "";
+    print "In run_command block. Name: $cmd_name, Command: $cmd_path\n";
+    if (exists $cmd_hash{'perlcmd'}) {
+	# Is this a Perl command we should eval?
+	print "Running command as Perl: $cmd_path\n";
+	eval($cmd_path) or die("problem running via eval"); # Eval(chdir()) doesn't return non-zero if failure.
+    }
+    else {
+	print "Running command via system()\n";
+	system($cmd_path);
+    }
+    my $raw_exit = $?;
+    my $converted_exit = $raw_exit >> 8;
+    if ($converted_exit != 0) {
+	die("FATAL ERROR IN EXECUTION.\n Command: ${cmd_path}\nTIME TO DIE.\n");
+	
+    }
+    #print "raw exit: $raw_exit, converted exit: $converted_exit\n";
 };
 
 sub update_cvs {
@@ -69,27 +88,24 @@ sub main {
         &update_cvs;
     }
 
+    # Add the kernel build commands to the build array
     if (defined($options{'build_kernel'})) {
         print "Building kernel\n";
         push @build_array, @build_kernel_array;
     }
 
+    # Add the userland build commands to the build array
     if (defined($options{'build_userland'})) {
         print "Building userland\n";
         push @build_array, @build_userland_array;
     }
 
-    for my $current ( 0 .. $#build_array) {
-        print "$build_array[$current]{name}\n";
-    }
-
-    die 1;
-
+    # Iterate over the commands in @build_array
     for my $current (0 ... $#build_array) {
-        &run_command($build_array[$current]{name}, $build_array[$current]{command});
+	&run_command($build_array[$current]);
     }
     
-    print "Build complete.";
+    print "Build complete.\n";
     exit 0;
 };
 
