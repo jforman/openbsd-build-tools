@@ -1,11 +1,16 @@
 #!/usr/bin/perl
+use strict;
+#use warnings;
 
 use Cwd;
+use Getopt::Long qw(:config auto_help);
 
-$CVSROOT="anoncvs@mirror.planetunix.net:/cvs";
-$ARCH="i386"; ## Generalize this by the output of `machine`
+my $CVSROOT="anoncvs\@mirror.planetunix.net:/cvs";
+my $ARCH="i386"; ## Generalize this by the output of `machine`
 
-@commands_array = (
+my @build_array = ();
+
+my @build_kernel_array = (
     # Build kernel
     { name => "cd_confdir", command => "cd /usr/src/sys/arch/$ARCH/conf" },
     { name => "run_config", command => "/usr/sbin/config GENERIC" },
@@ -14,7 +19,9 @@ $ARCH="i386"; ## Generalize this by the output of `machine`
     { name => "run_makedepend", command => "make depend" },
     { name => "run_make", command => "make" },
     { name => "run_makeinstall", command => "make install" },
-    ## Reboot here. # Throw in a -postreboot argument?
+    );
+
+my @build_userland_array = (
     # Build userland
     { name => "clean_objdir", command => "rm -rf /usr/obj/*" },
     { name => "cd_usrsrc", command => "cd /usr/src" },
@@ -26,11 +33,9 @@ $ARCH="i386"; ## Generalize this by the output of `machine`
     );
 
 sub run_command {
-    print "\n";
-    $command_name = $_[0];
-    $command_path = $_[1];
-    print "name: $command_name\n";
-    print "running: $command_path\n";
+    my $command_name = $_[0];
+    my $command_path = $_[1];
+    print "In run_command block. Name: $command_name, Command: $command_path\n";
     system($command_path) == 0 or die "\nFailure at step: $command_name, Exit status: $?\n"
 };
 
@@ -48,6 +53,21 @@ sub update_cvs {
 };
 
 sub main {
+    # Command line parameters
+    my %options = {};
+    GetOptions(
+        'skipcvs' => \$options{'skipcvs'},
+        'kernel' => \$options{'build_kernel'},
+        'userland' => \$options{'build_userland'},
+        );
+
+    print "skipcvs: $options{'skipcvs'}\n";
+    print "kern: $options{'build_kernel'}\n";
+    print "uland: $options{'build_userland'}\n";
+
+    die 1;
+
+    ## Make an option: --skipcvs
     if ($ARGV[0] eq "skipcvs") {
         print "Source upgrade via CVS skipped.\n";
     }
@@ -55,12 +75,15 @@ sub main {
         &update_cvs;
     }
 
-    for $current (0 ... $#commands_array) {
-        &run_command($commands_array[$current]{name}, $commands_array[$current]{command});
+    ## Option: --kernel --userland
+    ## Depending on which one, push (@build_array, @kernel/@userland_array);
+
+    for my $current (0 ... $#build_array) {
+        &run_command($build_array[$current]{name}, $build_array[$current]{command});
     }
     
-    print "Build complete."
-    exit 0
+    print "Build complete.";
+    exit 0;
 };
 
 &main;
