@@ -61,22 +61,29 @@ sub main {
         'userland' => \$options{'build_userland'},
         );
 
-    print "skipcvs: $options{'skipcvs'}\n";
-    print "kern: $options{'build_kernel'}\n";
-    print "uland: $options{'build_userland'}\n";
-
-    die 1;
-
-    ## Make an option: --skipcvs
-    if ($ARGV[0] eq "skipcvs") {
-        print "Source upgrade via CVS skipped.\n";
+    if (defined($options{'skipcvs'})) {
+        print "Requested to skip updating OpenBSD source.\n";
     }
     else {
+        print "Updating source CVS tree\n";
         &update_cvs;
     }
 
-    ## Option: --kernel --userland
-    ## Depending on which one, push (@build_array, @kernel/@userland_array);
+    if (defined($options{'build_kernel'})) {
+        print "Building kernel\n";
+        push @build_array, @build_kernel_array;
+    }
+
+    if (defined($options{'build_userland'})) {
+        print "Building userland\n";
+        push @build_array, @build_userland_array;
+    }
+
+    for my $current ( 0 .. $#build_array) {
+        print "$build_array[$current]{name}\n";
+    }
+
+    die 1;
 
     for my $current (0 ... $#build_array) {
         &run_command($build_array[$current]{name}, $build_array[$current]{command});
