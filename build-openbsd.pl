@@ -1,20 +1,22 @@
 #!/usr/bin/perl
 use strict;
-#use warnings;
+use warnings;
+use diagnostics;
 
 use Cwd;
 use Getopt::Long qw(:config auto_help);
 
-my $CVSROOT="anoncvs\@mirror.planetunix.net:/cvs";
-my $ARCH="amd64"; ## Generalize this by the output of `machine`
+my $CVSROOT = "anoncvs\@mirror.planetunix.net:/cvs";
+my $ARCH = `uname -m`;
+chomp($ARCH);
 
 my @build_array = ();
 
 my @build_kernel_array = (
     # Build kernel
-    { name => "cd_confdir", command => 'chdir("/usr/src/sys/arch/amd64/conf")', perlcmd => 1},
+    { name => "cd_confdir", command => "chdir('/usr/src/sys/arch/" . ${ARCH} . "/conf')", perlcmd => 1},
     { name => "run_config", command => "/usr/sbin/config GENERIC" },
-    { name => "cd_compiledir", command => 'chdir("/usr/src/sys/arch/amd64/compile/GENERIC")', perlcmd => 1 },
+    { name => "cd_compiledir", command => "chdir('/usr/src/sys/arch/" .${ARCH} . "/compile/GENERIC')", perlcmd => 1 },
     { name => "run_makeclean", command => "make clean" },
     { name => "run_makedepend", command => "make depend" },
     { name => "run_make", command => "make" },
@@ -39,23 +41,22 @@ sub run_command {
     my $cmd_name = $cmd_hash{'name'};
     my $cmd_path = $cmd_hash{'command'};
     my $cmd_perl = "";
+    chomp($cmd_path);
     print "In run_command block. Name: $cmd_name, Command: $cmd_path\n";
     if (exists $cmd_hash{'perlcmd'}) {
-	# Is this a Perl command we should eval?
-	print "Running command as Perl: $cmd_path\n";
-	eval($cmd_path) or die("problem running via eval"); # Eval(chdir()) doesn't return non-zero if failure.
+        # Is this a Perl command we should eval?
+        print "Running command as Perl: $cmd_path\n";
+        eval($cmd_path) or die("problem running via eval"); # Eval(chdir()) doesn't return non-zero if failure.
     }
     else {
-	print "Running command via system()\n";
-	system($cmd_path);
+        print "Running command via system()\n";
+        system($cmd_path);
     }
     my $raw_exit = $?;
     my $converted_exit = $raw_exit >> 8;
     if ($converted_exit != 0) {
-	die("FATAL ERROR IN EXECUTION.\n Command: ${cmd_path}\nTIME TO DIE.\n");
-	
-    }
-    #print "raw exit: $raw_exit, converted exit: $converted_exit\n";
+        die("FATAL ERROR IN EXECUTION.\n Command: ${cmd_path}\nTIME TO DIE.\n");
+	}
 };
 
 sub update_cvs {
@@ -73,7 +74,7 @@ sub update_cvs {
 
 sub main {
     # Command line parameters
-    my %options = {};
+    my %options = ();
     GetOptions(
         'updatesource' => \$options{'updatesource'},
         'kernel' => \$options{'build_kernel'},
@@ -90,7 +91,7 @@ sub main {
 
     # Add the kernel build commands to the build array
     if (defined($options{'build_kernel'})) {
-        print "Building kernel\n";
+        print "Building kernel for $ARCH\n";
         push @build_array, @build_kernel_array;
     }
 
@@ -102,7 +103,7 @@ sub main {
 
     # Iterate over the commands in @build_array
     for my $current (0 ... $#build_array) {
-	&run_command($build_array[$current]);
+        &run_command($build_array[$current]);
     }
     
     print "Build complete.\n";
