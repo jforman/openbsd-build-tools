@@ -6,7 +6,7 @@ use diagnostics;
 use Cwd;
 use Getopt::Long qw(:config auto_help);
 
-my $CVSROOT = "anoncvs\@mirror.planetunix.net:/cvs";
+my $CVSROOT = "anoncvs\@omirror.home.jeffreyforman.net:/cvs";
 my $ARCH = `uname -m`;
 chomp($ARCH);
 
@@ -60,38 +60,42 @@ sub run_command {
 };
 
 sub update_cvs {
-    if (-d "/usr/src") {
-        print "Source checkout exists, updating files\n";
+    my ($source_tag) = @_;
+    $source_tag = uc $source_tag;
+    if (-e "/usr/src/CVS/Root") {
+        print "Source checkout exists, updating files from tag ${source_tag}.\n";
         chdir("/usr/src");
-        system("/usr/bin/cvs up -rOPENBSD_4_8 -Pd");
+        system("/usr/bin/cvs up -r ${source_tag} -Pd");
     }
     else {
-        print "Source checkout does not exist. Checking out from CVS repo.\n";
+        print "Source checkout does not exist. Checking out tag ${source_tag} from CVS repository.\n";
         chdir("/usr");
-        system("/usr/bin/cvs -d$CVSROOT checkout -rOPENBSD_4_8 -P src");
+        system("/usr/bin/cvs -d ${CVSROOT} checkout -r ${source_tag} -P src");
     }
 };
 
 sub main {
     # Command line parameters
     my %options = ();
+    my $source_tag = 'HEAD';
     GetOptions(
-        'updatesource' => \$options{'updatesource'},
         'kernel' => \$options{'build_kernel'},
+        'sourcetag=s' => \$source_tag,
+        'updatesource' => \$options{'updatesource'},
         'userland' => \$options{'build_userland'},
         );
 
     if (defined($options{'updatesource'})) {
         print "Updating source CVS tree\n";
-        &update_cvs;
+        &update_cvs($source_tag);
     }
     else {
         print "Requested to skip updating OpenBSD source.\n";
-    }
+    };
 
     # Add the kernel build commands to the build array
     if (defined($options{'build_kernel'})) {
-        print "Building kernel for $ARCH\n";
+        print "Building kernel for ${ARCH}\n";
         push @build_array, @build_kernel_array;
     }
 
