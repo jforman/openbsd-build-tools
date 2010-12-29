@@ -63,9 +63,9 @@ sub update_cvs {
     my ($source_tag) = @_;
     $source_tag = uc $source_tag;
     if (-e "/usr/src/CVS/Root") {
-        print "Source checkout exists, updating files from tag ${source_tag}.\n";
+        print "Source checkout exists, updating files.\n";
         chdir("/usr/src");
-        system("/usr/bin/cvs up -r ${source_tag} -Pd");
+        system("/usr/bin/cvs -d ${CVSROOT} up -Pd");
     }
     else {
         print "Source checkout does not exist. Checking out tag ${source_tag} from CVS repository.\n";
