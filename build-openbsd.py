@@ -85,6 +85,11 @@ def read_cvs_tag():
 def checkout_or_update_cvs(args):
     """Handle either checking out or updating an already retrieved CVS repository."""
     cvs_tag_options = ""
+
+    if not (os.access("/usr/", os.W_OK) or os.access("/usr/src", os.W_OK)):
+        log_build_action("Not enough write permissions to checkout/update local CVS checkout in /usr/src.")
+        raise RunCommandError
+
     if args.cvstag:
         cvs_tag_options = "-r%(cvs_tag)s" % { "cvs_tag" : args.cvstag }
 
@@ -150,6 +155,8 @@ def main():
         log_build_action("Exception! OSError: %s" % err)
         raise BuildException
     except RunCommandError:
+        raise BuildException
+    except ExecutionError:
         raise BuildException
     except KeyboardInterrupt:
         log_build_action("User requested process killed.")
