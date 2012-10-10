@@ -30,7 +30,6 @@ import sys
 
 BUILD_LOG = collections.OrderedDict()
 CVS_SERVER_PATH = "anoncvs@anoncvs3.usa.openbsd.org:/cvs"
-NUM_CPUS = 3
 PLATFORM = platform.machine()
 
 class BuildException(Exception):
@@ -40,6 +39,13 @@ class BuildException(Exception):
 class RunCommandError(Exception):
     """Exception class to handle errors when a shell command is run."""
     pass
+
+
+def determine_cpu_count():
+    """ Return the number of CPUs OpenBSD is using."""
+    cpu_count = int(run_command("/sbin/sysctl -n hw.ncpu", return_output = True))
+    return cpu_count
+
 
 def parse_args():
     """Process arguments from command line."""
@@ -56,16 +62,21 @@ def parse_args():
 def log_build_action(action):
     """Append build actions to OrderedDict BUILD_LOG."""
     now = datetime.datetime.now()
-    print action
+    print "Build Action: %s" % action
     BUILD_LOG[now] = action
 
 
-def run_command(command_path):
+def run_command(command_path, return_output = False):
     """Execute passed command line."""
-    print "Executing: %s" % command_path
-    log_build_action(command_path)
+    log_build_action("Running command: %s" % command_path)
     try:
-        process_call = subprocess.check_call(command_path, shell=True)
+        # TODO(jforman): This logic is cludgy, but seems there is no
+        # subprocess method flexible enough to watch output and/or
+        # return output at the same time, without buffering everything.
+        if return_output:
+            return_output = subprocess.check_output(command_path, shell=True)
+        else:
+            subprocess.check_call(command_path, shell=True)
     except OSError, err:
         log_build_action("OSError Exception in run_command: %s" % err)
         raise RunCommandError
@@ -73,7 +84,8 @@ def run_command(command_path):
         log_build_action("CalledProcessError in run_command: %s" % err)
         raise RunCommandError
 
-    log_build_action("Process Call Output: %s" % process_call)
+    if return_output:
+        return return_output
 
 def read_cvs_tag():
     """Attempt to read the branch name from a CVS repo checkout."""
@@ -82,7 +94,7 @@ def read_cvs_tag():
 
     return cvs_tag
 
-def checkout_or_update_cvs(args):
+def checkout_or_update_cvs(args, env):
     """Handle either checking out or updating an already retrieved CVS repository."""
     cvs_tag_options = ""
 
@@ -110,7 +122,7 @@ def checkout_or_update_cvs(args):
         run_command("/usr/bin/cvs -d %(cvs_server_path)s up -Pd" % { "cvs_server_path" : CVS_SERVER_PATH })
 
 
-def build_and_install_kernel(args):
+def build_and_install_kernel(args, env):
     """ Iterate through steps to build and install kernel."""
     log_build_action("Building kernel %(kernel)s for %(platform)s" % {"kernel" : args.kernel,
                                                                       "platform" : PLATFORM })
@@ -119,44 +131,46 @@ def build_and_install_kernel(args):
     run_command("/usr/sbin/config %(kernel)s" % { "kernel" : args.kernel })
     os.chdir("/usr/src/sys/arch/%(platform)s/compile/%(kernel)s" % { "platform" : PLATFORM,
                                                                      "kernel" : args.kernel })
-    run_command("/usr/bin/make -j%(cpus)d clean" % { "cpus" : NUM_CPUS })
-    run_command("/usr/bin/make -j%(cpus)d" % { "cpus" : NUM_CPUS })
-    run_command("/usr/bin/make -j%(cpus)d install"% { "cpus" : NUM_CPUS })
+    run_command("/usr/bin/make -j%(NUM_CPUS)d clean" % env)
+    run_command("/usr/bin/make -j%(NUM_CPUS)d" % env)
+    run_command("/usr/bin/make -j%(NUM_CPUS)d install"% env)
     log_build_action("Kernel build complete.")
 
 
-def build_and_install_userland(args):
+def build_and_install_userland(args, env):
     """ Iterate through steps to build and install userland."""
     log_build_action("Building userland.")
     run_command("/bin/rm -rf /usr/obj/*")
     os.chdir("/usr/src")
-    run_command("/usr/bin/make -j%(cpus)d obj" % { "cpus" : NUM_CPUS })
+    run_command("/usr/bin/make -j%(NUM_CPUS)d obj" % env)
     os.chdir("/usr/src/etc")
-    run_command("/usr/bin/env DESTDIR=/ /usr/bin/make -j%(cpus)d distrib-dirs" % { "cpus" : NUM_CPUS })
+    run_command("/usr/bin/env DESTDIR=/ /usr/bin/make -j%(NUM_CPUS)d distrib-dirs" % env)
     os.chdir("/usr/src")
-    run_command("/usr/bin/make -j%(cpus)d build" % { "cpus" : NUM_CPUS })
+    run_command("/usr/bin/make -j%(NUM_CPUS)d build" % env)
     log_build_action("Userland build complete.")
     
 def main():
     """Build while you build, so you can secure while you're secure."""
     args = parse_args()
-    log_build_action("Build started.")
+    env = {}
+    env["NUM_CPUS"] = determine_cpu_count()
     log_build_action("Command line args: %s" % args)
+    log_build_action("Environment: %s" % env)
+
+    log_build_action("Build started.")
     
     try:
         if args.updatecvs:
-            checkout_or_update_cvs(args)
+            checkout_or_update_cvs(args, env)
         if args.build and "kernel" in args.build:
-            build_and_install_kernel(args)
+            build_and_install_kernel(args, env)
         if args.build and "userland" in args.build:
-            build_and_install_userland(args)
+            build_and_install_userland(args, env)
         log_build_action("Build completed.")
     except OSError, err:
         log_build_action("Exception! OSError: %s" % err)
         raise BuildException
     except RunCommandError:
-        raise BuildException
-    except ExecutionError:
         raise BuildException
     except KeyboardInterrupt:
         log_build_action("User requested process killed.")
