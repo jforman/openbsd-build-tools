@@ -46,15 +46,34 @@ def determine_cpu_count():
     cpu_count = int(run_command("/sbin/sysctl -n hw.ncpu", return_output = True))
     return cpu_count
 
+def determine_running_kernel():
+    """ Return the currently-running kernel name and build number."""
+    (kernel_name, build_number) = run_command("/usr/bin/uname -v", return_output = True).split("#")
+    return kernel_name, build_number
+
 
 def parse_args():
     """Process arguments from command line."""
-    parser = argparse.ArgumentParser(description="Wrapper to build OpenBSD kernel and userland. Also can update local CVS repo.")
-    parser.add_argument("--build", action="append", choices=["kernel", "userland"], help="What to build: kernel and/or userland.")
-    parser.add_argument("--updatecvs", action="store_true", help="Whether to checkout/update local CVS repository of code.")
-    parser.add_argument("--cvstag", help="Tag name to checkout/update. No tag means HEAD. Example: OPENBSD_5_0")
-    parser.add_argument("--kernel", choices=["GENERIC", "GENERIC.MP", "RAMDISK", "RAMDISK_CD"],
-                        default="GENERIC", help="Name of kernel to build.")
+    running_kernel = determine_running_kernel()[0]
+    parser = argparse.ArgumentParser(description="Wrapper to build OpenBSD kernel and userland. Also can update local CVS repo.",
+                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--build",
+                        action="append",
+                        choices=["kernel", "userland"],
+                        help="What to build: kernel and/or userland.")
+    parser.add_argument("--updatecvs",
+                        action="store_true",
+                        help="Whether to checkout/update local CVS repository of code.")
+    parser.add_argument("--cvstag",
+                        help="Tag name to checkout/update. Example: OPENBSD_5_0",
+                        default=read_cvs_tag())
+    parser.add_argument("--kernel",
+                        choices=set(["GENERIC",
+                                     "GENERIC.MP",
+                                     "RAMDISK",
+                                     "RAMDISK_CD",
+                                     running_kernel]),
+                        default=running_kernel, help="Name of kernel to build.")
     args = parser.parse_args()
     return args
 
@@ -109,7 +128,7 @@ def checkout_or_update_cvs(args, env):
         log_build_action("No CVS checkout found. Attempting checkout now.")
         os.chdir("/usr")
         run_command("/usr/bin/cvs -d %(cvs_server_path)s checkout %(cvs_tag)s -P src" % { "cvs_server_path" : CVS_SERVER_PATH,
-                                                                                                "cvs_tag" : cvs_tag_options })
+                                                                                          "cvs_tag" : cvs_tag_options })
     else:
         log_build_action("CVS checkout found. Executing update.")
         local_cvs_tag = read_cvs_tag()
@@ -126,7 +145,6 @@ def build_and_install_kernel(args, env):
     """ Iterate through steps to build and install kernel."""
     log_build_action("Building kernel %(kernel)s for %(platform)s" % {"kernel" : args.kernel,
                                                                       "platform" : PLATFORM })
-
     os.chdir("/usr/src/sys/arch/%(platform)s/conf" % {"platform" : PLATFORM })
     run_command("/usr/sbin/config %(kernel)s" % { "kernel" : args.kernel })
     os.chdir("/usr/src/sys/arch/%(platform)s/compile/%(kernel)s" % { "platform" : PLATFORM,
