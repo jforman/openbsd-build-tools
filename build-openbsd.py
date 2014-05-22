@@ -1,23 +1,11 @@
 #!/usr/bin/env python
+"""Wrapper around updating, building, and installing updated
+OpenBSD source code.
 
-"""Wrapper around updating and building OpenBSD source.
-# ./build-openbsd.py --help
-usage: build-openbsd.py [-h] [--build {kernel,userland}] [--updatecvsrepo]
-                        [--cvstag CVSTAG]
-                        [--kernel {GENERIC,GENERIC.MP,RAMDISK,RAMDISK_CD}]
+Provides the ability to update the installed machine's branch code,
+hopefully to STABLE.
 
-Wrapper to build OpenBSD kernel and userland. Also can update local CVS repo.
-
-optional arguments:
-  -h, --help            show this help message and exit
-  --build {kernel,userland}
-                        What to build: kernel and/or userland.
-  --updatecvsrepo       Whether to checkout/update local CVS repository of
-                        code.
-  --cvstag CVSTAG       Tag name to checkout/update. No tag means HEAD.
-                        Example: OPENBSD_5_0
-  --kernel {GENERIC,GENERIC.MP,RAMDISK,RAMDISK_CD}
-                        Name of kernel to build.
+Otherwise, allows for automated following of CURRENT.
 """
 
 import argparse
@@ -29,7 +17,8 @@ import subprocess
 import sys
 
 BUILD_LOG = collections.OrderedDict()
-CVS_SERVER_PATH = "anoncvs@anoncvs3.usa.openbsd.org:/cvs"
+CVS_SERVER_PATH = "anoncvs@openbsd.cs.toronto.edu:/cvs"
+CVS_TAG = "/usr/src/CVS/Tag"
 PLATFORM = platform.machine()
 
 class BuildException(Exception):
@@ -55,7 +44,7 @@ def determine_running_kernel():
 def parse_args():
     """Process arguments from command line."""
     running_kernel = determine_running_kernel()[0]
-    parser = argparse.ArgumentParser(description="Wrapper to build OpenBSD kernel and userland. Also can update local CVS repo.",
+    parser = argparse.ArgumentParser(description="Build and install OpenBSD kernel and userland.",
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--build",
                         action="append",
@@ -63,10 +52,9 @@ def parse_args():
                         help="What to build: kernel and/or userland.")
     parser.add_argument("--updatecvs",
                         action="store_true",
-                        help="Whether to checkout/update local CVS repository of code.")
+                        help="Checkout/update the local CVS check out.")
     parser.add_argument("--cvstag",
-                        help="Tag name to checkout/update. Example: OPENBSD_5_0",
-                        default=read_cvs_tag())
+                        help="Tag to checkout/update. Example: OPENBSD_5_5")
     parser.add_argument("--kernel",
                         choices=set(["GENERIC",
                                      "GENERIC.MP",
@@ -108,61 +96,77 @@ def run_command(command_path, return_output = False):
 
 def read_cvs_tag():
     """Attempt to read the branch name from a CVS repo checkout."""
-    with open("/usr/src/CVS/Tag") as tag_fh:
-        cvs_tag = tag_fh.readline()[1:].strip()
+
+    try:
+        with open(CVS_TAG) as tag_fh:
+            cvs_tag = tag_fh.readline()[1:].strip()
+    except IOError, err:
+        log_build_action("Unable to read CVS tag from disk: %s" % err)
+        raise
 
     return cvs_tag
 
-def checkout_or_update_cvs(args, env):
-    """Handle either checking out or updating an already retrieved CVS repository."""
+def checkout_or_update_cvs(args):
+    """Handle either checking out or updating an already 
+    retrieved CVS repository."""
     cvs_tag_options = ""
 
     if not (os.access("/usr/", os.W_OK) or os.access("/usr/src", os.W_OK)):
-        log_build_action("Not enough write permissions to checkout/update local CVS checkout in /usr/src.")
+        log_build_action("Not enough write permissions to checkout/update "
+                         "local CVS checkout in /usr/src.")
         raise RunCommandError
 
-    if args.cvstag:
+    if args.cvstag is not None:
         cvs_tag_options = "-r%(cvs_tag)s" % { "cvs_tag" : args.cvstag }
 
-    if not os.path.exists("/usr/src/CVS/Tag"):
+    if not os.path.exists(CVS_TAG):
         log_build_action("No CVS checkout found. Attempting checkout now.")
         os.chdir("/usr")
-        run_command("/usr/bin/cvs -d %(cvs_server_path)s checkout %(cvs_tag)s -P src" % { "cvs_server_path" : CVS_SERVER_PATH,
-                                                                                          "cvs_tag" : cvs_tag_options })
-    else:
-        log_build_action("CVS checkout found. Executing update.")
-        local_cvs_tag = read_cvs_tag()
-        if (args.cvstag is not None) and args.cvstag != local_cvs_tag:
-            log_build_action("The tag you requested (%(user_cvs_tag)s) does not match what is locally checked out (%(local_cvs_tag)s). Exiting" %
-                             { "user_cvs_tag" : args.cvstag,
-                               "local_cvs_tag" : local_cvs_tag })
-            raise BuildException
-        os.chdir("/usr/src/")
-        run_command("/usr/bin/cvs -d %(cvs_server_path)s up -Pd" % { "cvs_server_path" : CVS_SERVER_PATH })
+        run_command("/usr/bin/cvs -d %(cvs_server_path)s checkout "
+                    "%(cvs_tag)s -P src" % { "cvs_server_path" : CVS_SERVER_PATH,
+                                             "cvs_tag" : cvs_tag_options })
+        return
+
+    local_cvs_tag = read_cvs_tag()
+    if args.cvstag and (local_cvs_tag != args.cvstag):
+        log_build_action("Upgrading across versions via source "
+                         "is not suggested.")
+        log_build_action("See: http://www.openbsd.org/faq/faq5.html#BldBinary")
+        raise RunCommandError
+
+    log_build_action("CVS checkout found for branch %(branch)s. "
+                     "Executing update." % {"branch" : local_cvs_tag})
+    os.chdir("/usr/src/")
+    run_command("/usr/bin/cvs -d %(cvs_server_path)s up "
+                "%(cvs_tag)s -Pd" % { "cvs_server_path" : CVS_SERVER_PATH,
+                                      "cvs_tag" : cvs_tag_options })
 
 
 def build_and_install_kernel(args, env):
     """ Iterate through steps to build and install kernel."""
-    log_build_action("Building kernel %(kernel)s for %(platform)s" % {"kernel" : args.kernel,
-                                                                      "platform" : PLATFORM })
+    log_build_action("Building kernel %(kernel)s for "
+                     "%(platform)s" % {"kernel" : args.kernel,
+                                       "platform" : PLATFORM })
     os.chdir("/usr/src/sys/arch/%(platform)s/conf" % {"platform" : PLATFORM })
     run_command("/usr/sbin/config %(kernel)s" % { "kernel" : args.kernel })
-    os.chdir("/usr/src/sys/arch/%(platform)s/compile/%(kernel)s" % { "platform" : PLATFORM,
-                                                                     "kernel" : args.kernel })
+    os.chdir("/usr/src/sys/arch/%(platform)s/"
+             "compile/%(kernel)s" % { "platform" : PLATFORM,
+                                      "kernel" : args.kernel })
     run_command("/usr/bin/make -j%(NUM_CPUS)d clean" % env)
     run_command("/usr/bin/make -j%(NUM_CPUS)d" % env)
     run_command("/usr/bin/make -j%(NUM_CPUS)d install"% env)
     log_build_action("Kernel build complete.")
 
 
-def build_and_install_userland(args, env):
+def build_and_install_userland(env):
     """ Iterate through steps to build and install userland."""
     log_build_action("Building userland.")
     run_command("/bin/rm -rf /usr/obj/*")
     os.chdir("/usr/src")
     run_command("/usr/bin/make -j%(NUM_CPUS)d obj" % env)
     os.chdir("/usr/src/etc")
-    run_command("/usr/bin/env DESTDIR=/ /usr/bin/make -j%(NUM_CPUS)d distrib-dirs" % env)
+    run_command("/usr/bin/env DESTDIR=/ /usr/bin/make "
+                "-j%(NUM_CPUS)d distrib-dirs" % env)
     os.chdir("/usr/src")
     run_command("/usr/bin/make -j%(NUM_CPUS)d build" % env)
     log_build_action("Userland build complete.")
@@ -179,11 +183,11 @@ def main():
     
     try:
         if args.updatecvs:
-            checkout_or_update_cvs(args, env)
+            checkout_or_update_cvs(args)
         if args.build and "kernel" in args.build:
             build_and_install_kernel(args, env)
         if args.build and "userland" in args.build:
-            build_and_install_userland(args, env)
+            build_and_install_userland(env)
         log_build_action("Build completed.")
     except OSError, err:
         log_build_action("Exception! OSError: %s" % err)
