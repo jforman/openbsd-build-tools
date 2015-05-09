@@ -17,4 +17,5 @@ make release
 echo "Verifying the files are built and as they should."
 cd /usr/src/distrib/sets
 sh checkflist
+cd $RELEASEDIR
 ls -l > $RELEASEDIR/index.txt
