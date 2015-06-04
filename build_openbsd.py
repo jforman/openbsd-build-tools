@@ -9,6 +9,7 @@ import platform
 import re
 import subprocess
 import sys
+import tarfile
 
 BUILD_LOG = collections.OrderedDict()
 
@@ -44,7 +45,7 @@ def get_running_branch():
                              "expected format \d.\d: %s" % branch)
 
     log_build_action("Branch found to be %s." % branch)
-    return branch.replace(".", "")
+    return branch.replace(".", "").strip()
 
 
 def parse_args():
@@ -86,6 +87,10 @@ def parse_args():
     parser.add_argument("--release_base",
                         default="/usr/release",
                         help="Base directory on local file system where a release is built.")
+    parser.add_argument("--site_base",
+                        default=None,
+                        help="Directory from which site tarball is created.")
+
     args = parser.parse_args()
     return args
 
@@ -211,7 +216,7 @@ def build_and_install_userland(cpus):
     run_command("/usr/bin/make -j%d build" % cpus)
     log_build_action("Userland build complete.")
 
-def build_release(release_base, force):
+def build_release(release_base, site_base, force, interactive):
     """Build release set of installable OpenBSD files."""
     log_build_action("Setting build environment variables.")
     os.environ['DESTDIR'] = "%s/dest" % release_base
@@ -226,12 +231,23 @@ def build_release(release_base, force):
     log_build_action("Building release.")
     os.chdir("/usr/src/etc")
     run_command("/usr/bin/make release")
+    if site_base:
+        build_site_tarball(os.environ['RELEASEDIR'], site_base)
+
     log_build_action("Verifying release.")
     os.chdir("/usr/src/distrib/sets")
     run_command("/bin/sh checkflist", force=force)
     os.chdir(os.environ['RELEASEDIR'])
     log_build_action("Generating releaese index.")
     run_command("/bin/ls -nT > %s/index.txt" % os.environ['RELEASEDIR'])
+
+def build_site_tarball(release_dir, site_base):
+    """Build a siteXX.tgz containing custom files to deploy."""
+    log_build_action("Building site tarball rooted at %s" % site_base)
+    site_targz = tarfile.open(name="%s/site%s.tgz" % (release_dir, get_running_branch()),
+                              mode="w:gz",)
+    site_targz.add(site_base, arcname="/", recursive=True)
+    site_targz.close()
 
 def main():
     """Build while you build, so you can secure while you're secure."""
@@ -249,7 +265,7 @@ def main():
         if args.build and "userland" in args.build:
             build_and_install_userland(args.cpus)
         if args.build and "release" in args.build:
-            build_release(args.release_base, args.force)
+            build_release(args.release_base, args.site_base, args.force, args.interactive)
         log_build_action("Build completed.")
     except OSError, err:
         log_build_action("Exception! OSError: %s" % err)
