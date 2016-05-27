@@ -10,8 +10,11 @@ import re
 import subprocess
 import sys
 import tarfile
+import urllib2
 
 BUILD_LOG = collections.OrderedDict()
+
+RE_PKG_FILENAME= re.compile(r"<a href=\"(.*\.tgz)\">")
 
 
 class BuildException(Exception):
@@ -25,27 +28,32 @@ class RunCommandError(Exception):
 
 
 def get_kernel_name():
-    """ Return the currently-running kernel name and build number."""
+    """Return the currently-running kernel name and build number."""
     kernel_name = run_command("/usr/bin/uname -v", return_output=True).split("#")[0]
     return kernel_name
 
 
 def get_cpu_count():
-    """ Return the number of CPUs OpenBSD is using."""
+    """Return the number of CPUs OpenBSD is using."""
     cpu_count = int(run_command("/sbin/sysctl -n hw.ncpu",
                                 return_output=True))
     return cpu_count
 
+def get_running_arch():
+    """Get running architecture."""
+    return run_command("/usr/bin/uname -p", return_output=True)
 
 def get_running_branch():
-    """ Return currently-running branch of installed OS."""
+    """Return currently-running branch of installed OS."""
     branch = run_command("/usr/bin/uname -r", return_output=True)
     if not re.match(r'\d\.\d', branch):
         raise BuildException("Unable to determine running branch, "
                              "expected format \d.\d: %s" % branch)
 
+
+    branch = branch.strip()
     log_build_action("Branch found to be %s." % branch)
-    return branch.replace(".", "").strip()
+    return branch
 
 
 def parse_args():
@@ -54,7 +62,8 @@ def parse_args():
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--build",
                         action="append",
-                        choices=["kernel", "userland", "release"],
+                        default=[],
+                        choices=["kernel", "userland", "release", "site"],
                         help="Which part of OpenBSD to build.")
     parser.add_argument("--cpus",
                         default=get_cpu_count(),
@@ -63,7 +72,7 @@ def parse_args():
                         help="Tag to checkout/update. Example: OPENBSD_5_5",
                         default="HEAD")
     parser.add_argument("--cvs_server",
-                        default="openbsd.cs.toronto.edu",
+                        default="obsdacvs.cs.toronto.edu",
                         help="FQDN/IP address of CVS server for OpenBSD repo.")
     parser.add_argument("--force",
                         action="store_true",
@@ -78,6 +87,9 @@ def parse_args():
                                      "RAMDISK_CD",
                                      get_kernel_name()]),
                         default=get_kernel_name(), help="Name of kernel to build.")
+    parser.add_argument("--package_mirror",
+                        default="mirrors.mit.edu",
+                        help="FQDN of OpenBSD package mirror. Default: %(default)s.")
     parser.add_argument("--platform",
                         default=platform.machine(),
                         help="Machine platform. Auto-detected. Normally you won't need to redefine this.")
@@ -89,7 +101,7 @@ def parse_args():
                         help="Base directory on local file system where a release is built.")
     parser.add_argument("--site_base",
                         default=None,
-                        help="Directory from which site tarball is created.")
+                        help="Root directory containing package config and versioned subdirs.")
 
     args = parser.parse_args()
     return args
@@ -218,9 +230,6 @@ def build_and_install_userland(cpus):
 
 def build_release(release_base, site_base, force, interactive):
     """Build release set of installable OpenBSD files."""
-    log_build_action("Setting build environment variables.")
-    os.environ['DESTDIR'] = "%s/dest" % release_base
-    os.environ['RELEASEDIR'] = "%s/release" % release_base
 
     log_build_action("Clearing out old build and release directories.")
     run_command("/bin/rm -rf %s" % os.environ['DESTDIR'])
@@ -241,31 +250,93 @@ def build_release(release_base, site_base, force, interactive):
     log_build_action("Generating releaese index.")
     run_command("/bin/ls -nT > %s/index.txt" % os.environ['RELEASEDIR'])
 
+def get_install_site_packages(package_mirror, site_base):
+    """Given a mirror and package file, return a list of packages for branch."""
+    packages_file = os.path.join(site_base, "packages")
+    if not os.path.exists(packages_file):
+        return
+
+    with open(packages_file) as f:
+        package_regexes = f.readlines()
+
+    packages_path = "/pub/OpenBSD/%s/packages/%s" % (get_running_branch(),
+                                                     get_running_arch())
+
+    packages_url = "http://%s/%s" % (package_mirror, packages_path)
+    log_build_action("Getting package list from %s" % packages_url)
+    urlpath = urllib2.urlopen(packages_url)
+    mirror_pkg_html = urlpath.read()
+    mirror_packages = RE_PKG_FILENAME.findall(mirror_pkg_html)
+
+    packages_to_install = []
+
+    for current in package_regexes:
+        current = current.strip()
+        re_pkg_name = re.compile("^%s.*\.tgz$" % current)
+        pkgs_to_add = filter(re_pkg_name.match, mirror_packages)
+        print "pkgs to add on this round: %s" % pkgs_to_add
+        packages_to_install.extend(pkgs_to_add)
+
+    print "packages to install: %s" % packages_to_install
+    return (packages_url, packages_to_install)
+
+
+def write_install_site(package_mirror, site_base):
+    # NEXT
+    # can i just stuck them into a space delimited list and fetchall?
+    # or do i need to create a list and iterate over it constantly?
+    log_build_action("Building install.site file.")
+    (packages_url, packages_to_install) = get_install_site_packages(package_mirror, site_base)
+
+    install_site_file = os.path.join(site_base, get_running_branch(), "install.site")
+    print "writing install site file at %s" % install_site_file
+    with open(install_site_file, "w+") as f:
+        f.write("!#/bin/ksh\n")
+        f.write("export PKG_PATH=%s\n" % packages_url)
+        for current in packages_to_install:
+            f.write("/usr/sbin/pkg_add -v %s\n" % (current.rstrip(".tgz")))
+
 def build_site_tarball(release_dir, site_base):
-    """Build a siteXX.tgz containing custom files to deploy."""
-    log_build_action("Building site tarball rooted at %s" % site_base)
-    site_targz = tarfile.open(name="%s/site%s.tgz" % (release_dir, get_running_branch()),
-                              mode="w:gz",)
-    site_targz.add(site_base, arcname="/", recursive=True)
+    """Build a siteXX.tgz containing custom files to deploy where root is site_base."""
+    if not site_base:
+        log_build_action("No base directory for site tarball specified.")
+        raise BuildException
+    tarball_path = "%s/site%s.tgz" % (release_dir, get_running_branch().replace(".",""))
+
+    versioned_site_base = os.path.join(site_base, get_running_branch())
+    log_build_action("Building site tarball rooted at %s" % versioned_site_base)
+    site_targz = tarfile.open(name=tarball_path, mode="w:gz")
+    site_targz.add(versioned_site_base, arcname="/", recursive=True)
     site_targz.close()
+
 
 def main():
     """Build while you build, so you can secure while you're secure."""
+    args = parse_args()
     os.unsetenv("DESTDIR")
     os.unsetenv("RELEASEDIR")
-    args = parse_args()
+
     log_build_action("Command line args: %s" % args)
     log_build_action("Build started.")
+
 
     try:
         if args.update_cvs:
             checkout_or_update_cvs(args.cvs_tag, args.cvs_server)
-        if args.build and "kernel" in args.build:
+        if "kernel" in args.build:
             build_and_install_kernel(args.platform, args.kernel, args.cpus)
-        if args.build and "userland" in args.build:
+        if "userland" in args.build:
             build_and_install_userland(args.cpus)
-        if args.build and "release" in args.build:
+
+        log_build_action("Setting build environment variables.")
+        os.environ['DESTDIR'] = "%s/dest" % args.release_base
+        os.environ['RELEASEDIR'] = "%s/release" % args.release_base
+
+        if "release" in args.build:
             build_release(args.release_base, args.site_base, args.force, args.interactive)
+        if "site" in args.build:
+            write_install_site(args.package_mirror, args.site_base)
+            build_site_tarball(os.environ['RELEASEDIR'], args.site_base)
         log_build_action("Build completed.")
     except OSError, err:
         log_build_action("Exception! OSError: %s" % err)
